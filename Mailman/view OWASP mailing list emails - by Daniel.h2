@@ -1,0 +1,192 @@
+<?xml version="1.0"?>
+<H2>
+  <SourceCode>#region config
+var owaspMailmanUrl = "https://lists.owasp.org/mailman/listinfo";
+var owaspArchive = "https://lists.owasp.org/pipermail/";
+var owaspListInfo = "https://lists.owasp.org/mailman/listinfo/";
+
+var o2platform = "Owasp-o2-platform";
+
+#endregion
+//var topPanel = panel.clear().add_Panel();
+var topPanel = O2Gui.open&lt;Panel&gt;("OWASP Mailman Helper", 1200, 900);
+var optionsPanel = topPanel.insert_Above&lt;GroupBox&gt;(100).set_Text("Options").add_Panel();
+var mainPanel = topPanel.add&lt;GroupBox&gt;().set_Text("").add_Panel();
+
+var threadsPanel = mainPanel.insert_Left&lt;GroupBox&gt;().set_Text("Threads").add_Panel();
+var threadBrowser = mainPanel.insert_Left&lt;GroupBox&gt;().set_Text("Thread").add_Browser();
+
+var threadTree = threadsPanel.add_TreeView();
+var statsPanel = mainPanel.insert_Left&lt;GroupBox&gt;(400).set_Text("Statistics").add_Panel();//
+var ggroupsPanel = optionsPanel.insert_Right&lt;GroupBox&gt;(200).set_Text("Port to google group").add_Panel();
+var statPanel = optionsPanel.insert_Right&lt;GroupBox&gt;(500).set_Text("Mailman Group statistics").add_Panel();
+Action&lt;string&gt; selectStastType = (list) =&gt; {list.info();};
+
+var statsControls = statPanel.add_LabelAndComboBoxAndButton("Select statistics type: ", "", "Draw", selectStastType);
+var drawStatsBtn = statsControls.controls&lt;Button&gt;();
+var drawStatsCombo = statsControls.controls&lt;ComboBox&gt;();
+drawStatsCombo.add_Item("Posts per year");
+
+var statusStrip = topPanel.parentForm().add_StatusStrip(false);
+//options panel
+var currentList_Label = optionsPanel.insert_Below&lt;Label&gt;().set_Text("Selected mailing list: ...");
+Action&lt;string&gt; selectList = (list) =&gt; {currentList_Label.set_Text("Selected mailing list: "+list);};
+var tab = optionsPanel.add_LabelAndComboBoxAndButton("Select list: ", "", "Load", selectList);
+var list_CombBox = tab.controls&lt;ComboBox&gt;();
+var loadThreadsBtn = tab.controls&lt;Button&gt;();
+var analyseAllBtn = optionsPanel.add_Button(20,20,"Analyse all lists");
+
+var listLinks = new List&lt;HtmlAgilityPack.HtmlNode&gt;();
+
+//chart control
+var chart = new Chart();
+chart.Dock = DockStyle.Fill;
+
+statsPanel.add(chart);
+//threads
+//TODO: change from hashtable to proper class
+var threads = new List&lt;System.Collections.Hashtable&gt;();
+
+//reading owasp mailing lists
+O2Thread.mtaThread(
+    ()=&gt;{
+        lock(listLinks) {
+        statusStrip.set_Text(" Loading OWASP mailman lists from OWASP...");
+        var htmlDocument = owaspMailmanUrl.uri().getHtml().htmlDocument();
+         
+         listLinks =  htmlDocument.select("//table")[0]
+                                        .SelectNodes(".//a")
+                                        .toList&lt;HtmlAgilityPack.HtmlNode&gt;()
+                                        .Where(x=&gt;x.innerHtml().Contains("&lt;strong&gt;")).ToList();
+        int i = 0;
+        foreach(var link in listLinks) {
+            var name = link.innerHtml().replace("&lt;strong&gt;", "").replace("&lt;/strong&gt;","");
+            var item = list_CombBox.add_Item(name);   
+            if(name.eq(o2platform))
+                list_CombBox.select_Item(i);
+            i++;
+           
+        }
+    statusStrip.set_Text(" OWASP mailman lists loaded!");
+    }
+});   
+loadThreadsBtn.onClick(
+    () =&gt; {
+    lock(listLinks) {
+        var selectedList = list_CombBox.get_Text();
+        foreach(var link in listLinks)
+        {
+            var name = link.innerHtml().replace("&lt;strong&gt;", "").replace("&lt;/strong&gt;","");
+            if(name == selectedList) {
+                var nLink = link.attribute("href").value().replace(owaspListInfo, owaspArchive);
+                O2Thread.mtaThread(
+                ()=&gt;{
+                    threads = new List&lt;System.Collections.Hashtable&gt;();
+                    statusStrip.set_Text(" Downloading threads from "+nLink);
+                    var htmlDocument = nLink.uri().getHtml().htmlDocument();
+                    var threadedLinks =  htmlDocument.select("//table")[0]
+                                        .SelectNodes(".//a")
+                                        .toList&lt;HtmlAgilityPack.HtmlNode&gt;()
+                                        .Where(x=&gt;x.Attributes["href"].Value.Contains("thread.html")).ToList();
+                    threadTree.clear();
+                    foreach(var threadedLink in threadedLinks) {
+                        var nnLink = (nLink+"/"+threadedLink.Attributes["href"].Value);
+                        var html = nnLink.uri().getHtml().htmlDocument();
+                        var threadLinks = html.select("//body")[0].SelectNodes(".//a").toList&lt;HtmlAgilityPack.HtmlNode&gt;().Where(x=&gt;x.Attributes["href"].notNull());
+                        foreach(var threadLink in threadLinks) {
+                            if(threadLink.Attributes["href"].Value.regEx("[0-9]{6}\\.html")) {
+                                var threadHtml = nnLink.replace("thread.html",threadLink.Attributes["href"].Value).url().getHtml().htmlDocument();
+                                var h = new System.Collections.Hashtable();
+                                h["Topic"] =  threadHtml.select("//h1")[0].InnerHtml;
+                                h["Author"] =  threadHtml.select("//b")[0].InnerHtml;
+                                var timeStr =  threadHtml.select("//i")[0].InnerHtml;
+                                h["Content"] = threadHtml.select("//pre")[0].InnerHtml;
+                                h["Time"] = DateTime.ParseExact(timeStr.Replace(" EST", "-5:00").Replace(" EDT","-4:00").Replace("  ", " "),"ddd MMM d HH:mm:sszzz yyyy", System.Globalization.CultureInfo.InvariantCulture);
+                                threads.Add(h);
+                                var node = threadTree.add_Node(h["Topic"]);
+                                node.add_Node("Time: {0}".format(h["Time"]));
+                                node.add_Node("Author: {0}".format(h["Author"]));
+                                node.set_Tag(h["Content"]);
+                            }
+                        }
+                    }
+                    statusStrip.set_Text("Threads downloaded from "+nLink);
+                });
+            }
+        }
+    }
+});
+analyseAllBtn.onClick(
+    () =&gt; {
+        threadTree.clear();
+        foreach(var link in listLinks) {
+            var name = link.innerHtml().replace("&lt;strong&gt;", "").replace("&lt;/strong&gt;","");
+            var nLink = link.attribute("href").value().replace(owaspListInfo, owaspArchive);
+            var node = threadTree.add_Node(name);
+            node.add_Node("Link: {0}".format(nLink));
+            var htmlDocument = nLink.uri().getHtml().htmlDocument();
+            var trs =  htmlDocument.select("//table")[0]
+                                        .SelectNodes(".//tr")
+                                        .toList&lt;HtmlAgilityPack.HtmlNode&gt;().ToList();
+            var first = "";
+            var last = "";
+            foreach(var tr in trs) {
+                var td = tr.SelectNodes(".//td")[0];
+                if(first=="")
+                    first = td.InnerText;
+                last = td.InnerText;
+                td.InnerText.log();
+            }
+            node.add_Node("First post: {0}".format(first));
+            node.add_Node("Last post: {0}".format(last));
+           
+        }
+    }
+);
+threadTree.afterSelect(
+    (treeNode)=&gt; {
+        if(treeNode.get_Tag().notNull())
+            threadBrowser.set_Text("&lt;h2&gt;{1}&lt;/h2&gt;&lt;h3&gt;{2}&lt;/h3&gt; &lt;h3&gt;{3}&lt;/h3&gt;&lt;hr /&gt;&lt;br /&gt;{0}".format(treeNode.get_Tag().str(), treeNode.get_Text(), treeNode.Nodes[0].get_Text(), treeNode.Nodes[1].get_Text()));
+});
+drawStatsBtn.onClick(
+    () =&gt; {
+        statusStrip.set_Text(" Drawing new chart...");
+        var dict = new Dictionary&lt;int, int&gt;();
+        if(threads.count()==0) {
+            statusStrip.set_Text(" No threads for statistics...");
+            return;
+        }
+        foreach(var de in threads) {
+            var time = (System.DateTime)de["Time"];
+            if(!dict.Keys.Contains(time.Year))
+                dict[time.Year] = 0;
+            dict[time.Year]++;
+        }
+        chart.Series.Clear();
+        foreach(var k in dict.Keys) {
+            var serie = new Series(k.str());
+            serie.ChartType = SeriesChartType.Bar;
+            serie.Points.AddXY(k,dict[k]);
+            serie.IsValueShownAsLabel = true;
+            chart.Series.Add(serie);
+        }
+        chart.ChartAreas.Add("Chart");
+        statusStrip.set_Text(" Drawing finished...");
+    }
+);
+return "ok";
+
+//using O2.External.IE.ExtensionMethods
+//using System.Windows.Forms.DataVisualization.Charting
+
+//O2File:HtmlAgilityPack_ExtensionMethods.cs
+//O2File:IE_JQuery.cs
+
+//O2Ref:WatiN.Core.1x.dll
+//O2Ref:O2_External_IE.dll
+//O2Ref:O2_Misc_Microsoft_MPL_Libs.dll
+//O2Ref:System.Xml.dll
+//O2Ref:System.Xml.Linq.dll
+//O2Ref:System.Windows.Forms.DataVisualization.dll</SourceCode>
+  <ReferencedAssemblies />
+</H2>
